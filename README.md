@@ -3,7 +3,7 @@
 ## Overview 🔎
 A fully containerized, modular, and asynchronous personal agent powered by an LLM backend. Built using LangGraph, FastAPI, Gradio, PostgreSQL, and vLLM, this project serves as a multi-tool, state-aware AI assistant. It supports dynamic tool-calling powered by Tavily API web search and additional think step tool.
 
-## Architecture Overviews as Microservices 📦
+## Architecture Overviews as Microservices 🐳
 ```
 +-------------------+
 |    Gradio UI      |
@@ -57,7 +57,7 @@ chmod +x build.sh
 ```
 5. Access the Gradio user interface via http://localhost:7860
 
-## Additional Configurations
+## Additional Configurations 📦
 1. Switch to your favourite model in docker-compose.yml file under "command" argument. Make sure to use the right tool_chat_template or your own customised version and store it in vllm_server/template. 
 ```
       --model RedHatAI/Llama-3.2-1B-Instruct-FP8
