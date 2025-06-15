@@ -1,0 +1,65 @@
+services:
+  
+  agent-app:
+    image: agent-app:latest
+    container_name: agent-app
+    restart: unless-stopped
+    ports: 
+      - 8050:8050
+    env_file:
+      - ./app/src/.env
+
+  gradio-ui:
+    image: gradio-ui:latest
+    container_name: gradio-ui
+    restart: unless-stopped
+    ports: 
+      - 7860:7860
+
+  vllm:
+    image: vllm-server:latest
+    container_name: vllm
+    restart: unless-stopped
+    ports:
+      - 8000:8000
+    environment:
+      - TORCH_CUDA_ARCH_LIST=8.7
+      - HF_TOKEN=""
+    depends_on:
+      - postgres
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    command: >
+      --model RedHatAI/Llama-3.2-1B-Instruct-FP8
+      --served-model-name Llama-3.2-1B-Instruct-FP8
+      --max-model-len 4096
+      --gpu-memory-utilization 0.9
+      --generation-config generation_config
+      --enable-auto-tool-choice
+      --tool-call-parser llama3_json
+      --chat-template template/tool_chat_template_llama3.2_json.jinja
+
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    restart: unless-stopped
+    ports:
+      - 5432:5432
+    environment:
+      - POSTGRES_PASSWORD=pwd
+      - POSTGRES_USER=postgres
+      - POSTGRES_DB=history_db
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+  
+volumes:
+  pg-data:
+    driver: local
+
