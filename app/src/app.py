@@ -48,22 +48,6 @@ async def create_all_tables(engine: AsyncEngine):
         await conn.run_sync(Base.metadata.create_all)
 
 
-def classify_and_content(dumped_msg: dict):
-    """Map a dumpd-serialized LangChain message to (message_type, content) for persistence."""
-    msg_id = dumped_msg.get("id", [])
-    kwargs = dumped_msg.get("kwargs", {})
-    content = kwargs.get("content", "")
-    if "SystemMessage" in msg_id:
-        return "system", content
-    elif "HumanMessage" in msg_id:
-        return "user", content
-    elif "AIMessage" in msg_id:
-        return "assistant", content
-    elif "ToolMessage" in msg_id:
-        return "tool", content
-    return str(msg_id), content
-
-
 
 class Message(TypedDict):
     role: str
@@ -164,7 +148,7 @@ async def initiate_workflow(request: GenerationRequest,db:Annotated[AsyncSession
         try:
             agent_history = await async_db_save(db,prompt=input_prompt[0]["content"], response=item_content, message_type=message_type,thread_id=config["configurable"]["thread_id"])
         except Exception as db_error:
-            logger.error("DB ERROR CAUGHT: %s", db_error, exc_info=True)
+            logging.info("DB ERROR CAUGHT:", db_error)
             raise HTTPException(status_code=500,detail=str(db_error))
         
         serialized_item = dumpd(item) # serialize to dict
@@ -212,7 +196,7 @@ async def resume_workflow(request: ResumeGenerationRequest,db:Annotated[AsyncSes
         try:
             agent_history = await async_db_save(db,prompt=input_prompt[0]["content"],response=item_content,message_type=message_type,thread_id=config["configurable"]["thread_id"])
         except Exception as db_error:
-            logger.error("DB ERROR CAUGHT: %s", db_error, exc_info=True)
+            logging.info("DB ERROR CAUGHT:", db_error)
             raise HTTPException(status_code=500,detail=str(db_error))
         
         serialized_item = dumpd(item) # serialize to dict
@@ -236,7 +220,7 @@ async def generate_text(request: GenerationRequest,db:Annotated[AsyncSession, De
         raise HTTPException(status_code=500, detail=f"LLM generation failed: {str(e)}")
     
     try:
-        agent_history = await async_db_save(db,prompt=input_prompt[0]["content"], response=response.content, message_type="assistant", thread_id="generate-text")
+        agent_history = await async_db_save(db,prompt=input_prompt[0]["content"], response=response.content)
     except Exception as db_error:
         logging.info("DB ERROR CAUGHT:", db_error)
         raise HTTPException(status_code=500,detail=str(db_error))
@@ -246,68 +230,23 @@ async def generate_text(request: GenerationRequest,db:Annotated[AsyncSession, De
 
 
 
-# ----------------------------------- Streaming endpoints (SSE) -------------------------------------------------
-
-async def _sse_workflow_stream(graph_input, config, input_prompt):
-    """Shared SSE generator: streams tokens/interrupts/messages and persists final messages.
-
-    Uses a fresh AsyncSessionLocal() because the request-scoped Depends session is closed
-    before this StreamingResponse body runs.
-    """
-    thread_id = config["configurable"]["thread_id"]
-    async with AsyncSessionLocal() as db:
-        try:
-            async for ev in react_graph.async_astream_events(graph_input, config):
-                if ev["type"] == "message":
-                    message_type, item_content = classify_and_content(ev["message"])
-                    try:
-                        await async_db_save(
-                            db,
-                            prompt=input_prompt[0]["content"],
-                            response=item_content,
-                            message_type=message_type,
-                            thread_id=thread_id,
-                        )
-                    except Exception as db_error:
-                        logger.error("DB ERROR CAUGHT: %s", db_error, exc_info=True)
-                        yield f"data: {json.dumps({'type': 'error', 'detail': str(db_error)})}\n\n"
-                        return
-                yield f"data: {json.dumps(ev)}\n\n"
-        except Exception as e:
-            logger.error("STREAM ERROR CAUGHT: %s", e, exc_info=True)
-            yield f"data: {json.dumps({'type': 'error', 'detail': str(e)})}\n\n"
-        finally:
-            yield 'data: {"type": "done"}\n\n'
-
-
+# ----------------------------------- In development -------------------------------------------------    
 @app.post("/initiate-workflow-stream")
 async def initiate_workflow_stream(request: GenerationRequest):
-    """Streams a new workflow turn token-by-token via SSE."""
-    input_prompt = request.prompt  # list
-    config = request.config
-    graph_input = {"messages": input_prompt}
-    return StreamingResponse(
-        _sse_workflow_stream(graph_input, config, input_prompt),
-        media_type="text/event-stream",
-    )
+    """Stream action workflow."""
+    #input_prompt = {"prompt": request.prompt}
+    input_prompt = request.prompt # list
+    print(input_prompt)
+    response = []
 
+    async def event_stream():
+        async for event in react_graph.async_astream_react_agent(input_prompt):
+            if "messages" in event:
+                # Serialize the last message
+                serialized = dumpd(event["messages"][-1])
+                yield f"data: {json.dumps(serialized)}\n\n" 
 
-@app.post("/resume-workflow-stream")
-async def resume_workflow_stream(request: ResumeGenerationRequest):
-    """Streams a resumed workflow turn (after human feedback) token-by-token via SSE."""
-    resume_command = request.resume
-    config = request.config
-    input_prompt = request.prompt
-
-    if resume_command["action"] == "continue":
-        human_command = Command(resume={"action": resume_command["action"]})
-    else:
-        human_command = Command(resume={"action": resume_command["action"], "data": resume_command["data"]})
-
-    return StreamingResponse(
-        _sse_workflow_stream(human_command, config, input_prompt),
-        media_type="text/event-stream",
-    )
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 # To run this server:
 # Run in your terminal: uvicorn app:app --reload --host 0.0.0.0 --port 8050
