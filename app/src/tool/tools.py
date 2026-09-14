@@ -171,7 +171,7 @@ async def think_step(thought:str|Dict, config:RunnableConfig) -> Dict[str,Any]:
     return response.content
 
     
-web_search_tool = TavilySearch(max_search=2)
+web_search_tool = TavilySearch(max_results=2)
 
 
 # List of available tools

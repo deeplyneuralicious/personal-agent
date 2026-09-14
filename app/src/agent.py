@@ -10,6 +10,7 @@ import asyncio
 from llm.llm_services import llm_with_tools, async_generate_tool_response
 from tool.tools import tool_node
 from langgraph.checkpoint.memory import InMemorySaver
+from langchain_core.load import dumpd
 
 from dotenv import load_dotenv
 from state import AgentState
@@ -102,7 +103,7 @@ def routing_decision(state) -> Literal["END", "call_human_feedback"]:
     """Route LLM decision to either seeking human feedback or ending the graph """
 
     if len(state["messages"][-1].tool_calls) == 0:
-        ("--- Decision: Latest message is AIMessage with content without tool calling, ending graph ---")
+        print("--- Decision: Latest message is AIMessage with content without tool calling, ending graph ---")
         return "END"
     else:
         print("--- Decision: tool_calls in state, proceeding to 'call_human_feedback' node ---")
@@ -170,6 +171,41 @@ class AgentWorkflow:
         async for event in self.react_graph.astream(inputs, config,stream_mode="values"): # use return will return coroutine instead of async generator
             if "messages" in event:
                 yield event["messages"][-1] # async generator
+
+    async def async_astream_events(self, graph_input, config:RunnableConfig):
+        """Token-level streaming generator used by the streaming APIs.
+
+        `graph_input` is `{"messages": inputs}` for initiate, or a `Command(resume=...)`
+        for resume. Yields normalized dict events for the SSE envelope:
+          - {"type": "token",     "content": str}  progressive assistant tokens
+          - {"type": "interrupt", "value": dict}   human-in-the-loop tool approval request
+          - {"type": "message",   "message": dict} full, authoritative message (dumpd) for persistence
+        """
+        async for stream_mode, chunk in self.react_graph.astream(
+            graph_input, config, stream_mode=["messages", "updates", "values"]
+        ):
+            if stream_mode == "messages":
+                msg_chunk, metadata = chunk
+                # Only surface the user-facing assistant turn. `think_step` runs a nested
+                # LLM inside `tool_node`; without this filter its tokens leak into the chat.
+                if metadata.get("langgraph_node") != "call_llm":
+                    continue
+                text = msg_chunk.content
+                if text:
+                    yield {"type": "token", "content": text}
+
+            elif stream_mode == "updates":
+                if isinstance(chunk, dict) and "__interrupt__" in chunk:
+                    interrupt_obj = chunk["__interrupt__"][0]
+                    yield {"type": "interrupt", "value": interrupt_obj.value}
+
+            elif stream_mode == "values":
+                # Fallback interrupt detection (interrupt location varies across versions).
+                if isinstance(chunk, dict) and "__interrupt__" in chunk:
+                    interrupt_obj = chunk["__interrupt__"][0]
+                    yield {"type": "interrupt", "value": interrupt_obj.value}
+                if isinstance(chunk, dict) and "messages" in chunk and chunk["messages"]:
+                    yield {"type": "message", "message": dumpd(chunk["messages"][-1])}
 
 
 
